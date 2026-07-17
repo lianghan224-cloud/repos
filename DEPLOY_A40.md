@@ -39,3 +39,9 @@ The current `newlog2` configuration intentionally skips cuTC `ccd` and `als`:
 RUN_CUTC_CCD=0
 RUN_CUTC_ALS=0
 ```
+
+For the current `newlog2` resume workflow, see:
+
+```bash
+A40_PULL_AND_RESUME.md
+```
