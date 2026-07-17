@@ -1,0 +1,112 @@
+# Experimental workflow to build on windows. The workflow is working properly:
+# OpenBlas is used for BLAS/LAPACK, and installed using this link: https://sourceforge.net/projects/openblas/files/v0.3.29/OpenBLAS-0.3.29_x64.zip
+# It is then added to the path to allow Windows to find its dll.
+# MKL was initially used in place of OpenBlas, but could not work because of its complicated dll dependencies.
+# Still have not gotten OpenMP to work in python (seems to work for genten.exe though).
+
+name: Build and test on Windows
+on:
+  #workflow_dispatch
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      # Set fail-fast to false to ensure that feedback is delivered for all matrix combinations. Consider changing this to true when your workflow is stable.
+      fail-fast: false
+
+      matrix:
+        os: [windows-latest]
+        build_type: [Release]
+        include:
+          - os: windows-latest
+            openmp: OFF
+            serial: ON
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set reusable strings
+      # Turn repeated input strings (such as the build output directory) into step outputs. These step outputs can be used throughout the workflow file.
+      id: strings
+      shell: bash
+      run: |
+        echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: 3.11
+
+    - name: Install Python Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pytest pyttb
+   
+    # - name: Install mkl
+    #   shell: cmd
+    #   run: |
+    #     REM SPDX-FileCopyrightText: 2022 Intel Corporation
+    #     REM
+    #     REM SPDX-License-Identifier: MIT
+    #     set URL=https://registrationcenter-download.intel.com/akdlm/IRC_NAS/d91caaa0-7306-46ea-a519-79a0423e1903/w_BaseKit_p_2024.2.1.101_offline.exe
+    #     set COMPONENTS=intel.oneapi.win.mkl.devel
+    #     curl.exe --output %TEMP%\webimage.exe --url %URL% --retry 5 --retry-delay 5
+    #     start /b /wait %TEMP%\webimage.exe -s -x -f webimage_extracted --log extract.log
+    #     del %TEMP%\webimage.exe
+    #     webimage_extracted\bootstrapper.exe -s --action install --components=%COMPONENTS% --eula=accept -p=NEED_VS2017_INTEGRATION=0 -p=NEED_VS2019_INTEGRATION=0 -p=NEED_VS2022_INTEGRATION=0 --log-dir=.
+    #     set installer_exit_code=%ERRORLEVEL%
+    #     rd /s/q "webimage_extracted"
+    #     exit /b %installer_exit_code%
+        
+    # - name: Setup environment
+    #   shell: cmd
+    #   run: |
+    #      "c:\Program Files (x86)\Intel\oneAPI\setvars.bat"
+    #      set > $GITHUB_ENV
+
+    - name: Install OpenBLAS
+      run: |
+        mkdir openblas
+        cd openblas
+        curl -o openblas.zip -L --ssl-no-revoke --url https://sourceforge.net/projects/openblas/files/v0.3.29/OpenBLAS-0.3.29_x64.zip
+        unzip openblas.zip
+
+    - name: Add OpenBLAS to path so Windows can find its DLLs
+      shell: bash
+      run: echo "${{ github.workspace }}/openblas/bin" >> "$GITHUB_PATH"
+        
+    - name: Configure CMake
+      # Build using the Clang toolchain
+      # env:
+      #   MKLROOT: c:\Program Files (x86)\Intel\oneAPI\mkl\latest
+      # Add this to cmake args to use Clang instead of MSVC:  -T ClangCL (but it produces copious warnings)
+      run: >
+        cmake -B ${{ steps.strings.outputs.build-output-dir }}
+        -DKokkos_ENABLE_OPENMP=${{ matrix.openmp }}
+        -DKokkos_ENABLE_SERIAL=${{ matrix.serial }}
+        -DENABLE_PYTHON=ON
+        -DLAPACK_LIBS=${{ github.workspace }}/openblas/lib/libopenblas.lib
+        -S ${{ github.workspace }}
+
+    - name: Build
+      # Note that --config is needed because the Visual Studio generator is a multi-config generator.
+      # Copy generated _pygenten.pyd file to pygenten directory so it can be loaded properly by pygenten.
+      run: |
+        cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }}
+        cp ${{ steps.strings.outputs.build-output-dir }}/python/pygenten/${{ matrix.build_type }}/*.pyd ${{ steps.strings.outputs.build-output-dir }}/python/pygenten
+
+    - name: Test
+      working-directory: ${{ steps.strings.outputs.build-output-dir }}
+      # Set PYTHONPATH so python can find the pygenten module
+      # Set GENTEN_DLL_PATH so OpenBLAS dlls can be found
+      env:
+        PYTHONPATH: ${{ steps.strings.outputs.build-output-dir }}/python
+        GENTEN_DLL_PATH: ${{ github.workspace }}/openblas/bin
+      # Note that --build-config is needed because the Visual Studio generator is a multi-config generator.
+      run: |
+        ctest --build-config ${{ matrix.build_type }} --output-on-failure

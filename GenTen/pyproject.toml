@@ -1,0 +1,33 @@
+[build-system]
+requires = ["scikit-build-core"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "pygenten"
+version = "0.1.5"
+description = "A Python interace to the GenTen tensor decomposition library"
+readme = "python/README.md"
+authors = [
+  { name = "Eric Phipps" },
+]
+requires-python = ">=3.8"
+dependencies = ["numpy"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "License :: OSI Approved :: BSD License",
+  "Programming Language :: Python :: 3 :: Only",
+]
+
+[tool.scikit-build]
+ninja.version = ">=1.10"  # to support fortran
+ninja.make-fallback = false
+wheel.expand-macos-universal-tags = true
+logging.level = "DEBUG"
+wheel.install-dir = "pygenten"
+
+[tool.scikit-build.cmake.define]
+CMAKE_BUILD_TYPE = "RELEASE"
+PYGENTEN_PIP = "ON"
+# Note, removing @loader_path; from this list as it seems to cause duplicate
+# LC_RPATH errors during installation on Mac when using GNU compilers
+CMAKE_INSTALL_RPATH="$ORIGIN/lib64;$ORIGIN/lib;$ORIGIN;$ORIGIN/..;$ORIGIN/../lib;$ORIGIN/../lib64;$ORIGIN/../..;@loader_path/lib64;@loader_path/lib;@loader_path/..;@loader_path/../lib;@loader_path/../lib64;@loader_path/../.."

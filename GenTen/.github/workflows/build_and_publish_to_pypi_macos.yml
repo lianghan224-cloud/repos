@@ -1,0 +1,118 @@
+# Workflow to build binary wheels for macos.
+# Note:  to build for a different deployment target than the host OS, e.g., 13.x (Ventura), add:
+#   * cmake.define.PYGENTEN_OPENMP=OFF cmake.define.PYGENTEN_SERIAL=ON to CIBW_CONFIG_SETTINGS_MACOS
+# This is necessary because otherwise the OpenMP libraries will be for the wrong OS version.
+# An alternative approach would be to build libomp here instead of using homebrew to install it.
+
+name: Build python wheels - macos
+
+on:
+  workflow_dispatch
+
+jobs:
+  build-wheels:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-14, macos-15]
+        include:
+          - os: macos-14
+            target: 14
+          - os: macos-15
+            target: 15
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Set reusable strings
+        # Turn repeated input strings (such as the build output directory) into step outputs. These step outputs can be used throughout the workflow file.
+        id: strings
+        shell: bash
+        run: |
+          echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
+
+      - name: Install Trilinos
+        env:
+          Trilinos_Install_Dir: ${{ steps.strings.outputs.build-output-dir }}/trilinos-install
+        run: |
+          brew install ninja
+          git clone --single-branch --branch trilinos-release-16-0-branch https://github.com/trilinos/Trilinos.git
+          mkdir trilinos-build
+          cd trilinos-build
+          cmake \
+           -G Ninja \
+           -D CMAKE_INSTALL_PREFIX:PATH=${Trilinos_Install_Dir} \
+           -D CMAKE_BUILD_TYPE:STRING=RELEASE \
+           -D CMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.target }} \
+           -D Trilinos_ENABLE_DEBUG:BOOL=OFF \
+           -D Trilinos_ENABLE_CHECKED_STL:BOOL=OFF \
+           -D Trilinos_ENABLE_EXPLICIT_INSTANTIATION:BOOL=ON \
+           -D Trilinos_WARNINGS_AS_ERRORS_FLAGS:STRING="" \
+           -D Trilinos_ENABLE_ALL_PACKAGES:BOOL=OFF \
+           -D Trilinos_ENABLE_ALL_OPTIONAL_PACKAGES:BOOL=OFF \
+           -D BUILD_SHARED_LIBS:BOOL=ON \
+           -D CMAKE_VERBOSE_MAKEFILE:BOOL=OFF \
+           -D CMAKE_CXX_COMPILER:FILEPATH=clang++ \
+           -D CMAKE_C_COMPILER:FILEPATH=clang \
+           -D Trilinos_ENABLE_Fortran:BOOL=OFF \
+           -D F77_BLAS_MANGLE="(name,NAME) name ## _" \
+           -D TPL_ENABLE_BinUtils=OFF \
+           -D TPL_ENABLE_Pthread=OFF \
+           -D Trilinos_ENABLE_ROL=ON \
+           ../Trilinos
+          ninja install
+      
+      - name: Build wheels
+        uses: pypa/cibuildwheel@v3.3.0
+        with:
+          output-dir: dist
+        env:
+          CIBW_BUILD: cp3*-macosx_arm64
+          CIBW_BUILD_VERBOSITY: 1
+          CIBW_BEFORE_ALL_MACOS: "brew install libomp"
+          CIBW_CONFIG_SETTINGS_MACOS: "cmake.define.F77_BLAS_MANGLE='(name,NAME) name ## _' cmake.define.ENABLE_PYTHON_EMBED=OFF cmake.define.ENABLE_TRILINOS=ON"
+          CIBW_ENVIRONMENT_MACOS: MACOSX_DEPLOYMENT_TARGET=${{ matrix.target }} OpenMP_ROOT="$(brew --prefix)/opt/libomp" Trilinos_DIR=${{ steps.strings.outputs.build-output-dir }}/trilinos-install/lib/cmake/Trilinos DYLD_LIBRARY_PATH=${{ steps.strings.outputs.build-output-dir }}/trilinos-install/lib
+          # Not including pyttb in the tests for now because pyttb requires an older scipy which no longer provides binary wheels for newer python versions
+          # We could tell cibuildwheel to build scipy from scratch, but this requires several packages to be installed
+          #CIBW_TEST_REQUIRES: pytest pyttb
+          CIBW_TEST_REQUIRES: pytest
+          CIBW_TEST_COMMAND: >
+            cd {package} &&
+            pytest python/test
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dists-${{ matrix.os }}
+          path: dist/
+          
+  pypi-publish:
+    runs-on: ubuntu-latest
+
+    needs:
+      - build-wheels
+
+    permissions:
+      id-token: write
+
+    # Dedicated environments with protections for publishing are strongly recommended.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pygenten/
+
+    steps:
+      - name: Retrieve release distributions (14)
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dists-macos-14
+          path: dist/
+
+      - name: Retrieve release distributions (15)
+        uses: actions/download-artifact@v4
+        with:
+          name: release-dists-macos-15
+          path: dist/
+
+      - name: Publish release distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+         skip-existing: true
