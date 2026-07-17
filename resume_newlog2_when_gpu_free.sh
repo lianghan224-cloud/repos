@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OUT_ROOT="/data/project/lianghan/work/logs/newlog2"
-RUNNER="/data/project/lianghan/work/repos/run_newlog2_common_splits.sh"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUT_ROOT="${OUT_ROOT:-/data/project/lianghan/work/logs/newlog2}"
+OUT_ROOT="${OUT_ROOT%/}"
+RUNNER="${RUNNER:-$SCRIPT_DIR/run_newlog2_common_splits.sh}"
 LOG="$OUT_ROOT/driver.log"
 PIDFILE="$OUT_ROOT/driver.pid"
 LOCKDIR="$OUT_ROOT/resume_wait.lock"
@@ -29,7 +31,10 @@ done
 
 echo "[resume-start] $(date -Is) skip_ccd_als=1 tol=1e-4 min_free=${MIN_FREE_MIB}MiB"
 printf '%s\n' "$$" > "$PIDFILE"
-RUN_CUTC_CCD=0 RUN_CUTC_ALS=0 CUTC_TOLERANCE=1e-4 "$RUNNER"
+RUN_CUTC_CCD="${RUN_CUTC_CCD:-0}" \
+RUN_CUTC_ALS="${RUN_CUTC_ALS:-0}" \
+CUTC_TOLERANCE="${CUTC_TOLERANCE:-1e-4}" \
+"$RUNNER" 2>&1 | tee -a "$LOG"
 rc=$?
 echo "[resume-exit] $(date -Is) rc=$rc"
 exit "$rc"

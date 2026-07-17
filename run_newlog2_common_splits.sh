@@ -1,26 +1,50 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/data/project/lianghan/work/data/prepared_common_splits"
-TNS_ROOT="/data/project/lianghan/work/data/prepared_common_splits_tns"
-OUT_ROOT="/data/project/lianghan/work/logs/newlog2"
-REPOS="/data/project/lianghan/work/repos"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_WORK_ROOT="/data/project/lianghan/work"
+
+ROOT="${ROOT:-${DATA_ROOT:-$DEFAULT_WORK_ROOT/data/prepared_common_splits}}"
+ROOT="${ROOT%/}"
+TNS_ROOT="${TNS_ROOT:-${ROOT}_tns}"
+TNS_ROOT="${TNS_ROOT%/}"
+OUT_ROOT="${OUT_ROOT:-$DEFAULT_WORK_ROOT/logs/newlog2}"
+OUT_ROOT="${OUT_ROOT%/}"
+OUT_PARENT="$(dirname "$OUT_ROOT")"
+WORK_BASE="$(dirname "$OUT_PARENT")"
+if [[ "$WORK_BASE" == "/" ]]; then
+  DEFAULT_WORK_TMP="/tmp/newlog2_common_splits"
+else
+  DEFAULT_WORK_TMP="$WORK_BASE/tmp/newlog2_common_splits"
+fi
+REPOS="${REPOS:-$SCRIPT_DIR}"
+REPOS="${REPOS%/}"
 
 CUTC_DIR="${REPOS}/cuTC/software/single GPU/sgpu"
 CUTC_LOG_TO_CSV="${REPOS}/cuTC/software/scripts/log_to_csv.py"
 BLCO_DIR="${REPOS}/exp/blocked-linearized-coordinate"
-BLCO_BIN="${BLCO_DIR}/cpd64"
+BLCO_BIN="${BLCO_BIN:-${BLCO_DIR}/cpd64}"
 BLCO_LOG_TO_CSV="${BLCO_DIR}/scripts/log_to_csv_blco.py"
 GENTEN_TOOLS="${REPOS}/GenTen/tools"
-GENTEN_BIN="${REPOS}/GenTen/build/cuda/bin/genten"
+GENTEN_BIN="${GENTEN_BIN:-${REPOS}/GenTen/build/cuda/bin/genten}"
 COSTCO_DIR="${REPOS}/KDD19-CoSTCo"
-WORK_TMP="/data/project/lianghan/work/tmp/newlog2_common_splits"
+WORK_TMP="${WORK_TMP:-$DEFAULT_WORK_TMP}"
+WORK_TMP="${WORK_TMP%/}"
 
-DATASETS=("DARPA" "LANL2" "BJTaxi" "tpdata")
+DATASETS_ENV="${DATASETS:-DARPA LANL2 BJTaxi tpdata}"
+DATASETS_ENV="${DATASETS_ENV//,/ }"
+read -r -a DATASETS <<< "$DATASETS_ENV"
 RUN_CUTC_SGD="${RUN_CUTC_SGD:-1}"
 RUN_CUTC_CCD="${RUN_CUTC_CCD:-0}"
 RUN_CUTC_ALS="${RUN_CUTC_ALS:-0}"
+RUN_BLCO="${RUN_BLCO:-1}"
+RUN_GENTEN="${RUN_GENTEN:-1}"
+RUN_COSTCO="${RUN_COSTCO:-1}"
 FORCE_BUILD="${FORCE_BUILD:-0}"
+SKIP_BUILD="${SKIP_BUILD:-0}"
+DRY_RUN="${DRY_RUN:-0}"
+GPU_DEVICE="${GPU_DEVICE:-0}"
+BLCO_BLASLIBS="${BLCO_BLASLIBS:-/opt/anaconda3/envs/zhangsac/lib/liblapacke.so /opt/anaconda3/envs/zhangsac/lib/liblapack.so /opt/anaconda3/envs/zhangsac/lib/libopenblas.so -lgfortran}"
 
 rate_for() {
   python3 - "$ROOT/$1/${1}_metadata.json" <<'PY'
@@ -55,8 +79,16 @@ ensure_dirs() {
 }
 
 build_bins() {
-  PATH="/usr/local/cuda/bin:$PATH" make -C "$CUTC_DIR" tc
-  if [[ "$FORCE_BUILD" == "1" || ! -x "$BLCO_BIN" ]]; then
+  if [[ "$SKIP_BUILD" == "1" ]]; then
+    echo "[skip] SKIP_BUILD=1"
+    return
+  fi
+  if [[ "$RUN_CUTC_SGD" == "1" || "$RUN_CUTC_CCD" == "1" || "$RUN_CUTC_ALS" == "1" ]]; then
+    PATH="/usr/local/cuda/bin:$PATH" make -C "$CUTC_DIR" tc
+  else
+    echo "[skip] cuTC build disabled"
+  fi
+  if [[ "$RUN_BLCO" == "1" && ( "$FORCE_BUILD" == "1" || ! -x "$BLCO_BIN" ) ]]; then
     rm -rf "$BLCO_DIR/build-64"
     mkdir -p "$BLCO_DIR/build-64"
     rm -f "$BLCO_BIN"
@@ -65,11 +97,17 @@ build_bins() {
       COMPILER=GCC \
       BLAS_LIBRARY=OPENBLAS \
       BLASINC= \
-      BLASLIBS="/opt/anaconda3/envs/zhangsac/lib/liblapacke.so /opt/anaconda3/envs/zhangsac/lib/liblapack.so /opt/anaconda3/envs/zhangsac/lib/libopenblas.so -lgfortran" \
+      BLASLIBS="$BLCO_BLASLIBS" \
       cpd64
-  else
+  elif [[ "$RUN_BLCO" == "1" ]]; then
     echo "[skip] existing BLCO binary: $BLCO_BIN"
+  else
+    echo "[skip] BLCO build disabled"
   fi
+}
+
+needs_tns() {
+  [[ "$RUN_CUTC_SGD" == "1" || "$RUN_CUTC_CCD" == "1" || "$RUN_CUTC_ALS" == "1" || "$RUN_BLCO" == "1" ]]
 }
 
 export_tns() {
@@ -164,7 +202,7 @@ run_blco() {
     --rank 8 \
     --max-iter 150 \
     --kernel-id 10 \
-    --device 0 \
+    --device "$GPU_DEVICE" \
     --thread-cf 2 \
     2>&1 | python3 "$BLCO_LOG_TO_CSV" --input - --output "$tmp" >/dev/null
   mv "$tmp" "$out"
@@ -228,17 +266,44 @@ run_costco() {
 }
 
 main() {
+  echo "[config] REPOS=$REPOS"
+  echo "[config] ROOT=$ROOT"
+  echo "[config] TNS_ROOT=$TNS_ROOT"
+  echo "[config] OUT_ROOT=$OUT_ROOT"
+  echo "[config] WORK_TMP=$WORK_TMP"
+  echo "[config] DATASETS=${DATASETS[*]}"
+  echo "[config] RUN_CUTC_SGD=$RUN_CUTC_SGD RUN_CUTC_CCD=$RUN_CUTC_CCD RUN_CUTC_ALS=$RUN_CUTC_ALS RUN_BLCO=$RUN_BLCO RUN_GENTEN=$RUN_GENTEN RUN_COSTCO=$RUN_COSTCO DRY_RUN=$DRY_RUN"
+  if [[ "$DRY_RUN" == "1" ]]; then
+    echo "[dry-run] configuration printed; no build, export, or training started"
+    return 0
+  fi
   ensure_dirs
   build_bins
-  export_tns
+  if needs_tns; then
+    export_tns
+  else
+    echo "[skip] TNS export not needed"
+  fi
   for ds in "${DATASETS[@]}"; do
     local rate
     rate="$(rate_for "$ds")"
     echo "[dataset] $ds rate=$rate"
     run_cutc "$ds" "$rate"
-    run_blco "$ds" "$rate"
-    run_genten "$ds" "$rate"
-    run_costco "$ds" "$rate"
+    if [[ "$RUN_BLCO" == "1" ]]; then
+      run_blco "$ds" "$rate"
+    else
+      echo "[skip] BLCO disabled for $ds"
+    fi
+    if [[ "$RUN_GENTEN" == "1" ]]; then
+      run_genten "$ds" "$rate"
+    else
+      echo "[skip] GenTen disabled for $ds"
+    fi
+    if [[ "$RUN_COSTCO" == "1" ]]; then
+      run_costco "$ds" "$rate"
+    else
+      echo "[skip] CoSTCo disabled for $ds"
+    fi
   done
   echo "[done] outputs: $OUT_ROOT"
 }

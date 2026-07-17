@@ -8,14 +8,18 @@ This repository contains the experiment code used for the common-split runs:
 - `GenTen/`
 - top-level runner scripts for `newlog1` and `newlog2`
 
-The runner scripts currently assume this checkout path:
+The runner scripts now use their own checkout directory as `REPOS` by default.
+Dataset and output locations are configurable through environment variables:
 
 ```bash
-/data/project/lianghan/work/repos
+ROOT=/path/to/prepared_common_splits
+TNS_ROOT=/path/to/prepared_common_splits_tns
+OUT_ROOT=/path/to/newlog2
+WORK_TMP=/path/to/tmp
+DATASETS=tpdata
 ```
 
-For a different machine, either clone to that path or edit `ROOT`, `TNS_ROOT`,
-`OUT_ROOT`, `REPOS`, and `WORK_TMP` in:
+Use these variables with:
 
 ```bash
 run_newlog1_common_splits.sh

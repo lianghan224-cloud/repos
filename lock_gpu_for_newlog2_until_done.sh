@@ -6,7 +6,8 @@ if [[ "$(id -u)" != "0" ]]; then
   exit 1
 fi
 
-OUT_ROOT="/data/project/lianghan/work/logs/newlog2"
+OUT_ROOT="${OUT_ROOT:-/data/project/lianghan/work/logs/newlog2}"
+OUT_ROOT="${OUT_ROOT%/}"
 PIDFILE="$OUT_ROOT/resume_wait.pid"
 OWNER_USER="${OWNER_USER:-lianghan}"
 OWNER_GROUP="${OWNER_GROUP:-$(id -gn "$OWNER_USER")}"
