@@ -23,6 +23,17 @@ static inline long long p_walltime_us_now()
   return 1000000LL * (long long)now.tv_sec + (long long)now.tv_usec;
 }
 
+static inline long long p_cuda_elapsed_us(cudaEvent_t start_event, cudaEvent_t stop_event)
+{
+  float millis = 0.0f;
+  HANDLE_ERROR(cudaEventSynchronize(stop_event));
+  HANDLE_ERROR(cudaEventElapsedTime(&millis, start_event, stop_event));
+  if(millis < 0.0f) {
+    return 0;
+  }
+  return (long long)(millis * 1000.0f + 0.5f);
+}
+
 
 //the gpu kernel
 __global__ void p_update_sgd_gpu(ciss_t * d_traina, 
@@ -279,6 +290,9 @@ void tc_sgd(sptensor_t * traina,
 
     long long total_time_us = 0;
     long long total_gpu_time_us = 0;
+    cudaEvent_t train_start, train_stop;
+    HANDLE_ERROR(cudaEventCreate(&train_start));
+    HANDLE_ERROR(cudaEventCreate(&train_stop));
 
 
     //step into the kernel
@@ -312,12 +326,15 @@ void tc_sgd(sptensor_t * traina,
     HANDLE_ERROR(cudaMemcpy(d_value_c, mats[2]->values, mats[2]->I * DEFAULT_NFACTORS * sizeof(double), cudaMemcpyHostToDevice));
     HANDLE_ERROR(cudaDeviceSynchronize()); 
 
+    HANDLE_ERROR(cudaEventRecord(train_start, 0));
     p_update_sgd_gpu<<<blocknum_m, DEFAULT_BLOCKSIZE, 0>>>(d_traina, d_factora, d_factorb, d_factorc, learning_rate, regularization_index, tilenum);
-    HANDLE_ERROR(cudaDeviceSynchronize());
+    HANDLE_ERROR(cudaGetLastError());
+    HANDLE_ERROR(cudaEventRecord(train_stop, 0));
+    epoch_gpu_us = p_cuda_elapsed_us(train_start, train_stop);
 
     gettimeofday(&end,NULL);
     diff = 1000000LL*(end.tv_sec-start.tv_sec) + (end.tv_usec - start.tv_usec);
-    epoch_gpu_us = diff;   // 这里的“gpu时间”= H2D拷贝 + kernel + sync
+    (void)diff;
 
     
     HANDLE_ERROR(cudaMemcpy(mats[0]->values, d_value_a, mats[0]->I * DEFAULT_NFACTORS * sizeof(double), cudaMemcpyDeviceToHost));
@@ -333,7 +350,7 @@ void tc_sgd(sptensor_t * traina,
     gettimeofday(&end,NULL);
     diff = 1000000LL*(end.tv_sec-start.tv_sec) + (end.tv_usec - start.tv_usec);
     epoch_total_us = diff;     // 从start到D2H结束的总耗时
-    // 累加每一轮GPU训练段时间（H2D + kernel + sync）
+    // 累加每一轮 GPU 训练 kernel 时间；H2D/D2H/评估不计入 train_gpu。
     total_gpu_time_us += epoch_gpu_us;
 
     /* compute RMSE and adjust learning rate */
@@ -364,7 +381,10 @@ void tc_sgd(sptensor_t * traina,
     }
 
     prev_obj = obj;
-		  }
+			  }
+
+  HANDLE_ERROR(cudaEventDestroy(train_start));
+  HANDLE_ERROR(cudaEventDestroy(train_stop));
 
   // Restore the best checkpoint before final reporting so downstream
   // evaluation/log inspection can use the true best-epoch model.

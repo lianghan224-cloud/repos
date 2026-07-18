@@ -44,6 +44,14 @@ static int env_positive_int(const char* name, int default_value) {
     return default_value;
 }
 
+static long long cuda_elapsed_us(cudaEvent_t start_event, cudaEvent_t stop_event) {
+    float millis = 0.0f;
+    check_cuda(cudaEventSynchronize(stop_event), "cudaEventSynchronize timing stop");
+    check_cuda(cudaEventElapsedTime(&millis, start_event, stop_event), "cudaEventElapsedTime");
+    if (millis < 0.0f) return 0;
+    return (long long)llround((double)millis * 1000.0);
+}
+
 static EvalMetrics evaluate_sparse_tensor(const SparseTensor* X, const KruskalModel* A) {
     EvalMetrics out;
     out.loss = 0.0;
@@ -196,7 +204,6 @@ FType cpals_blco_dev(blcotensor* at_host, KruskalModel* A, int maxiter, FType to
 
     // Init GPU timers
     cudaEvent_t start, stop;
-    float millis;
     check_cuda(cudaEventCreate(&start), "cudaEventCreate start");
     check_cuda(cudaEventCreate(&stop), "cudaEventCreate stop");
 
@@ -239,16 +246,20 @@ FType cpals_blco_dev(blcotensor* at_host, KruskalModel* A, int maxiter, FType to
            monitor_val ? "val_rmse" : "train_rmse", (double)tolerance, max_bad_epochs);
 
     for (IType epoch = 1; epoch <= maxiter; ++epoch) {
-        cudaEventRecord(start);
+        long long epoch_gpu_us = 0;
 
         for (IType _n = 0; _n < N; _n++) {
             IType n = mode_order[_n];
             // Compute MTTKRP. Set output matrix to auxiliary array for pseudoinverse
             check_cuda(cudaMemset(mttkrp_res, 0, sizeof(FType) * R * at_host->modes[n]), "cudaMemset 0 mttkrp result");
+            check_cuda(cudaEventRecord(start), "cudaEventRecord mttkrp start");
             mttkrp_alto_dev_onemode<IType>(at_host, at_dev, A, mttkrp_res, kernel, n, thread_cf, stream_data, nprtn, M_dev->U, M_dev->U_dev, partial_matrices, partial_matrices_dev);
             check_cuda(cudaDeviceSynchronize(), "cudaDeviceSynchronize mttkrp_blco");
+            check_cuda(cudaEventRecord(stop), "cudaEventRecord mttkrp stop");
+            epoch_gpu_us += cuda_elapsed_us(start, stop);
 
             // Compute hadamards
+            check_cuda(cudaEventRecord(start, v_stream), "cudaEventRecord update start");
             value_fill(v_stream, V, R * R, 1.0);
             for (IType i = 0; i < N; i++) if (i != n) {
                 vector_hadamard(v_stream, V, grams[i], R * R);
@@ -266,25 +277,23 @@ FType cpals_blco_dev(blcotensor* at_host, KruskalModel* A, int maxiter, FType to
                 check_cublas(cublasDgemm(cublasHandle, CUBLAS_OP_N, CUBLAS_OP_N, R,
                     at_host->modes[n], R, &one, V, R, mttkrp_res, R, &zero, M_dev->U[n], R), "cublasDgemm");
             #endif
+            check_cuda(cudaEventRecord(stop, v_stream), "cudaEventRecord update stop");
+            epoch_gpu_us += cuda_elapsed_us(start, stop);
 
             // Normalize, only supports L2 for now
             // Reset lambda before computing current column norms.
             check_cuda(cudaMemsetAsync(M_dev->lambda, 0, sizeof(FType) * R, v_stream), "cudaMemset lambda");
+            check_cuda(cudaEventRecord(start, v_stream), "cudaEventRecord normalize start");
             columnwise_normscal(v_stream, normscal_kernel_blocks, M_dev->U[n], R, at_host->modes[n], M_dev->lambda);
 
             // Update grams again
             ata_gpu(cublasHandle, v_stream, M_dev->U[n], grams[n], at_host->modes[n], R);
-            check_cuda(cudaStreamSynchronize(v_stream), "cudaStreamSynchronize ata_gpu");
+            check_cuda(cudaEventRecord(stop, v_stream), "cudaEventRecord normalize stop");
+            epoch_gpu_us += cuda_elapsed_us(start, stop);
         }
 
         fit = kruskal_fit_gpu(cublasHandle, v_stream, grams, M_dev, at_host, work, mttkrp_res, X_norm, mode_order[N - 1], iprod_kernel_blocks);
-
-        cudaEventRecord(stop);
         check_cuda(cudaDeviceSynchronize(), "cudaDeviceSynchronize cpd");
-        cudaEventSynchronize(stop);
-        cudaEventElapsedTime(&millis, start, stop);
-
-        const long long epoch_gpu_us = (long long)llround((double)millis * 1000.0);
         total_gpu_time_us += epoch_gpu_us;
 
         for (IType i = 0; i < N; ++i) {
@@ -304,7 +313,7 @@ FType cpals_blco_dev(blcotensor* at_host, KruskalModel* A, int maxiter, FType to
         printf("epoch:%d   time-us:%lld   gpu-us:%lld   total-us:%lld   total-gpu-us:%lld\n",
                (int)epoch, epoch_gpu_us, epoch_gpu_us, total_time_us, total_gpu_time_us);
         printf("--> Iter %3d: f = %0.6f f-delta = %0.6f time = %0.6f, (s)\n",
-               (int)epoch, fit, (fit - fit_old), millis / 1000.0f);
+               (int)epoch, fit, (fit - fit_old), (double)epoch_gpu_us / 1e6);
 
         const double monitor_rmse = monitor_val ? val_m.rmse : train_m.rmse;
         if (monitor_rmse < best_stop_rmse - (double)tolerance) {

@@ -189,11 +189,15 @@ namespace Genten {
 
       virtual ttb_real getGpuTrainTime() const
       {
-        // In the non-SA path, per-iteration training work is:
-        // sample gradient + gradient compute + step update.
-        // These timers are disjoint and can be safely summed.
-        return timer.getTotalTime(timer_sample_g) +
-               timer.getTotalTime(timer_grad) +
+        // Strict training time excludes gradient sampling, communication,
+        // initialization, objective/fit evaluation, and data movement.
+        if (algParams.fuse) {
+          return timer.getTotalTime(timer_grad_nzs) +
+                 timer.getTotalTime(timer_grad_zs) +
+                 timer.getTotalTime(timer_step);
+        }
+        return timer.getTotalTime(timer_grad_mttkrp) +
+               timer.getTotalTime(timer_grad_update) +
                timer.getTotalTime(timer_step);
       }
 

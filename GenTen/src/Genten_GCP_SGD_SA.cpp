@@ -328,8 +328,9 @@ namespace Genten {
           if (compute_fit)
             p.fit = fit;
           p.cum_time = timer.getTotalTime(timer_sgd) + algParams.project_time_offset;
-          // timer_grad includes fused gradient + step kernels in SA mode.
-          p.cum_gpu_time = timer.getTotalTime(timer_grad);
+          p.cum_gpu_time = timer.getTotalTime(timer_grad_nzs) +
+                           timer.getTotalTime(timer_grad_zs) +
+                           timer.getTotalTime(timer_step);
         }
 
         if (failed_epoch) {

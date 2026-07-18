@@ -20,6 +20,17 @@ static inline long long p_walltime_us_now()
   return 1000000LL * (long long)now.tv_sec + (long long)now.tv_usec;
 }
 
+static inline long long p_cuda_elapsed_us(cudaEvent_t start_event, cudaEvent_t stop_event)
+{
+  float millis = 0.0f;
+  HANDLE_ERROR(cudaEventSynchronize(stop_event));
+  HANDLE_ERROR(cudaEventElapsedTime(&millis, start_event, stop_event));
+  if(millis < 0.0f) {
+    return 0;
+  }
+  return (long long)(millis * 1000.0f + 0.5f);
+}
+
 static int p_debug_ccd_stats_enabled(void)
 {
   const char* env = getenv("CUTC_CCD_DEBUG_STATS");
@@ -92,7 +103,7 @@ static void p_transpose_model(
 
     memcpy(factor, buf, nrows * ncols * sizeof(*factor));
   }
-  
+
 }
 
 //gpu kernels
@@ -101,16 +112,16 @@ static void p_transpose_model(
  * @version Now contains the segment scan
 */
 __global__ void update_residual_gpu(ciss_t * d_traina,
-                                    idx_t tilenum, 
+                                    idx_t tilenum,
                                     double* loss)
 {
   //__shared__ double accum[DEFAULT_BLOCKSIZE];
-  
+
   idx_t bid = blockIdx.x;
   idx_t tid = threadIdx.x;
   idx_t tileid = bid * DEFAULT_BLOCKSIZE + tid;
   double * entries = d_traina->entries;
-  
+
   double localloss = 0;
   if(tileid < tilenum)
   {
@@ -130,13 +141,13 @@ __global__ void update_residual_gpu(ciss_t * d_traina,
 
 /**
  * @brief Compute the nomin and denomin of the fraction with warp shuffle
- * @version Now reduces the atomic operation 
+ * @version Now reduces the atomic operation
 */
-__global__ void update_frac_gpu_as(ciss_t * d_traina, 
-                                   ordi_matrix * d_factora, 
-                                   ordi_matrix * d_factorb, 
-                                   ordi_matrix * d_factorc, 
-                                   double * d_nominbuffer, 
+__global__ void update_frac_gpu_as(ciss_t * d_traina,
+                                   ordi_matrix * d_factora,
+                                   ordi_matrix * d_factorb,
+                                   ordi_matrix * d_factorc,
+                                   double * d_nominbuffer,
                                    double * d_denominbuffer,
                                    idx_t tilenum)
 {
@@ -212,14 +223,14 @@ __global__ void update_frac_gpu_as(ciss_t * d_traina,
 
 /**
  * @brief Compute the nomin and denomin of the fraction
- * @version Now contains the atomic operation 
+ * @version Now contains the atomic operation
 */
-__global__ void update_frac_gpu(ciss_t * d_traina, 
-                                ordi_matrix * d_factora, 
-                                ordi_matrix * d_factorb, 
-                                ordi_matrix * d_factorc, 
+__global__ void update_frac_gpu(ciss_t * d_traina,
+                                ordi_matrix * d_factora,
+                                ordi_matrix * d_factorb,
+                                ordi_matrix * d_factorc,
                                 double * d_nominbuffer,
-                                double * d_denominbuffer, 
+                                double * d_denominbuffer,
                                 idx_t tilenum)
 {
   idx_t bid = blockIdx.x;
@@ -272,7 +283,7 @@ __global__ void update_frac_gpu(ciss_t * d_traina,
       {
         localloss[0] -= (d_factora->values)[(tmpi * DEFAULT_NFACTORS) + i] * localmbuffer[i] * localmbuffer[i+DEFAULT_NFACTORS];
         double denomin = (localmbuffer[i] * localmbuffer[i+DEFAULT_NFACTORS]) * (localmbuffer[i] * localmbuffer[i+DEFAULT_NFACTORS]);
-        atomicAdd(&(d_denominbuffer[f_id * DEFAULT_NFACTORS + i]), denomin); 
+        atomicAdd(&(d_denominbuffer[f_id * DEFAULT_NFACTORS + i]), denomin);
       }
       //compute the nomin
       for(idx_t i = 0; i < DEFAULT_NFACTORS; i++)
@@ -301,7 +312,7 @@ __global__ void update_frac_gpu(ciss_t * d_traina,
       {
         localloss[1] -= (d_factora->values)[(tmpi * DEFAULT_NFACTORS) + i]* localmbuffer[i] * localmbuffer[i+DEFAULT_NFACTORS];
         double denomin = (localmbuffer[i] * localmbuffer[i+DEFAULT_NFACTORS]) * (localmbuffer[i] * localmbuffer[i+DEFAULT_NFACTORS]);
-        atomicAdd(&(d_denominbuffer[f_id * DEFAULT_NFACTORS + i]), denomin); 
+        atomicAdd(&(d_denominbuffer[f_id * DEFAULT_NFACTORS + i]), denomin);
       }
       //compute the nomin
       for(idx_t i = 0; i < DEFAULT_NFACTORS; i++)
@@ -312,7 +323,7 @@ __global__ void update_frac_gpu(ciss_t * d_traina,
       }
       localtile += 2 * DEFAULT_T_TILE_WIDTH;
     }
-    
+
   }
 
 }
@@ -321,12 +332,12 @@ __global__ void update_frac_gpu(ciss_t * d_traina,
 /**
  * @brief Finally update the column for factor matrices
  * @version preliminary
-*/ 
-__global__ void update_ccd_gpu(ciss_t * d_traina, 
-                               ordi_matrix * d_factora, 
+*/
+__global__ void update_ccd_gpu(ciss_t * d_traina,
+                               ordi_matrix * d_factora,
                                double * d_nominbuffer,
-                               double * d_denominbuffer, 
-                               idx_t  dlength, 
+                               double * d_denominbuffer,
+                               idx_t  dlength,
                                double regularization_index)
 {
   idx_t bid = blockIdx.x;
@@ -335,7 +346,7 @@ __global__ void update_ccd_gpu(ciss_t * d_traina,
   double __align__(256) nomin[DEFAULT_NFACTORS];
   double __align__(256) denomin[DEFAULT_NFACTORS];
   double * value = d_factora->values;
-  
+
   if(tileid < dlength)
   {
     idx_t localtile = tileid * DEFAULT_NFACTORS;
@@ -520,6 +531,9 @@ static void p_tc_ccd_raw(
 
     long long total_gpu_time_us = 0;
     long long total_time_us = 0;
+    cudaEvent_t train_start, train_stop;
+    HANDLE_ERROR(cudaEventCreate(&train_start));
+    HANDLE_ERROR(cudaEventCreate(&train_stop));
     for(idx_t e = 1; e < max_iterate + 1; ++e) {
       long long epoch_gpu_us = 0;
       long long epoch_total_us = 0;
@@ -530,10 +544,15 @@ static void p_tc_ccd_raw(
         idx_t blocknum_u = nrows / DEFAULT_BLOCKSIZE + 1;
         HANDLE_ERROR(cudaMemset(d_nominbuffer, 0, max_rows * DEFAULT_NFACTORS * sizeof(double)));
         HANDLE_ERROR(cudaMemset(d_denominbuffer, 0, max_rows * DEFAULT_NFACTORS * sizeof(double)));
+        HANDLE_ERROR(cudaEventRecord(train_start, 0));
         update_frac_raw_gpu<<<blocknum_m, DEFAULT_BLOCKSIZE, 0>>>(
             nnz, d_ind0, d_ind1, d_ind2, d_vals, (int)mode,
             d_factora, d_factorb, d_factorc, d_nominbuffer, d_denominbuffer);
-        HANDLE_ERROR(cudaDeviceSynchronize());
+        HANDLE_ERROR(cudaGetLastError());
+        HANDLE_ERROR(cudaEventRecord(train_stop, 0));
+        epoch_gpu_us += p_cuda_elapsed_us(train_start, train_stop);
+
+        HANDLE_ERROR(cudaEventRecord(train_start, 0));
         if(mode == 0) {
           update_ccd_raw_gpu<<<blocknum_u, DEFAULT_BLOCKSIZE, 0>>>(
               d_factora, d_nominbuffer, d_denominbuffer, nrows, regularization_index);
@@ -544,12 +563,11 @@ static void p_tc_ccd_raw(
           update_ccd_raw_gpu<<<blocknum_u, DEFAULT_BLOCKSIZE, 0>>>(
               d_factorc, d_nominbuffer, d_denominbuffer, nrows, regularization_index);
         }
-        HANDLE_ERROR(cudaDeviceSynchronize());
+        HANDLE_ERROR(cudaGetLastError());
+        HANDLE_ERROR(cudaEventRecord(train_stop, 0));
+        epoch_gpu_us += p_cuda_elapsed_us(train_start, train_stop);
       }
 
-      gettimeofday(&end, NULL);
-      diff = 1000000 * (end.tv_sec - start.tv_sec) + end.tv_usec - start.tv_usec;
-      epoch_gpu_us = diff;
       total_gpu_time_us += epoch_gpu_us;
 
       HANDLE_ERROR(cudaMemcpy(mats[0]->values, d_value_a, mats[0]->I * DEFAULT_NFACTORS * sizeof(double), cudaMemcpyDeviceToHost));
@@ -577,6 +595,8 @@ static void p_tc_ccd_raw(
         break;
       }
     }
+    HANDLE_ERROR(cudaEventDestroy(train_start));
+    HANDLE_ERROR(cudaEventDestroy(train_stop));
 
     cudaFree(d_ind0);
     cudaFree(d_ind1);
@@ -601,20 +621,20 @@ static void p_tc_ccd_raw(
  * @param regularization_index Lambda
 */
 extern "C"{
-void tc_ccd(sptensor_t * traina, 
+void tc_ccd(sptensor_t * traina,
             sptensor_t * trainb,
             sptensor_t * trainc,
             sptensor_t * validation,
             sptensor_t * test,
-            ordi_matrix ** mats, 
+            ordi_matrix ** mats,
             ordi_matrix ** best_mats,
             int algorithm_index,
             long long project_start_us,
-            double regularization_index, 
-            double * best_rmse, 
-            double * tolerance, 
-            idx_t * nbadepochs, 
-            idx_t * bestepochs, 
+            double regularization_index,
+            double * best_rmse,
+            double * tolerance,
+            idx_t * nbadepochs,
+            idx_t * bestepochs,
             idx_t * max_badepochs)
 {
     idx_t const nmodes = traina->nmodes;
@@ -640,7 +660,7 @@ void tc_ccd(sptensor_t * traina,
     //    p_update_residual(rtensor, mats, DEFAULT_NFACTORS, f, -1);
     //}
     #endif
-    
+
     //initialize the devices
     int deviceCount;
     cudaGetDeviceCount(&deviceCount);
@@ -656,13 +676,13 @@ void tc_ccd(sptensor_t * traina,
     struct timeval start;
     struct timeval end;
     idx_t diff;
-    
+
     //malloc and copy the tensors + matrices to gpu
     ciss_t * d_traina, * d_trainb, * d_trainc;
     idx_t * d_directory_a, * d_directory_b, * d_directory_c;
-    idx_t * d_dims_a, * d_dims_b, * d_dims_c; 
+    idx_t * d_dims_a, * d_dims_b, * d_dims_c;
     idx_t * d_itemp1, *d_itemp2;
-    double * d_entries_a , * d_entries_b, * d_entries_c; 
+    double * d_entries_a , * d_entries_b, * d_entries_c;
     double * d_ftemp, * d_nominbuffer;
     //copy tensor for mode-1
     HANDLE_ERROR(cudaMalloc((void**)&d_traina, sizeof(ciss_t)));
@@ -724,7 +744,7 @@ void tc_ccd(sptensor_t * traina,
     double * h_nominbuffer = (double *)malloc(maxdlength * DEFAULT_NFACTORS *  sizeof(double));
     double * h_denominbuffer = (double *)malloc(DEFAULT_NFACTORS * maxdlength * sizeof(double));
     HANDLE_ERROR(cudaMalloc((void**)&d_nominbuffer, DEFAULT_NFACTORS * maxdlength * sizeof(double)));
-    double* d_denominbuffer; 
+    double* d_denominbuffer;
     HANDLE_ERROR(cudaMalloc((void**)&d_denominbuffer, DEFAULT_NFACTORS *  maxdlength * sizeof(double)));
 
     //copy the factor matrices
@@ -754,10 +774,10 @@ void tc_ccd(sptensor_t * traina,
     HANDLE_ERROR(cudaMemcpy(d_factorc, mats[2], sizeof(ordi_matrix), cudaMemcpyHostToDevice));
     mats[2]->values = d_ftemp;
 
-    
-    
+
+
     #ifdef CUDA_LOSS //to be done
-    sptensor_gpu_t * d_test, * d_validate;    
+    sptensor_gpu_t * d_test, * d_validate;
     #else
     double loss = tc_loss_sq(traina, mats, algorithm_index);
     double frobsq = tc_frob_sq(nmodes, regularization_index, mats);
@@ -785,6 +805,9 @@ void tc_ccd(sptensor_t * traina,
         max_iterate = (idx_t)parsed;
       }
     }
+    cudaEvent_t train_start, train_stop;
+    HANDLE_ERROR(cudaEventCreate(&train_start));
+    HANDLE_ERROR(cudaEventCreate(&train_stop));
     /* foreach epoch */
     for(idx_t e=1; e < max_iterate+1; ++e) {
        long long epoch_gpu_us = 0;
@@ -798,24 +821,24 @@ void tc_ccd(sptensor_t * traina,
        gettimeofday(&start,NULL);
       /*
         for(idx_t f=0; f < DEFAULT_NFACTORS; ++f) {
-        /* add current component to residual 
+        /* add current component to residual
         p_update_residual(rtensor, mats, DEFAULT_NFACTORS, f, 1);
 
         for(idx_t inner=0; inner < NUM_INNER; ++inner) {
 
-          /* compute new column 'f' for each factor 
+          /* compute new column 'f' for each factor
           for(idx_t m=0; m < nmodes; ++m) {
             memcpy(nomin, 0, rtensor->dims[m] * sizeof(double));
             memcpy(dnomin, 0, rtensor->dims[m] * sizeof(double));
             p_ccd_update(rtensor, m, f, nmodes, DEFAULT_NFACTORS, mats, nomin, dnomin);
-            
-            /* numerator/denominator are now computed; update factor column 
+
+            /* numerator/denominator are now computed; update factor column
             static inline void p_compute_newcol(rtensor, mats, nmoin, denomin, regularization_index, m, f);
 
-          } /* foreach mode 
-        } /* foreach inner iteration 
+          } /* foreach mode
+        } /* foreach inner iteration
 
-        /* subtract new rank-1 factor from residual 
+        /* subtract new rank-1 factor from residual
         update_residual_gpu(rtensor, mats, DEFAULT_NFACTORS, f, -1);
 
       } /* foreach factor */
@@ -829,44 +852,54 @@ void tc_ccd(sptensor_t * traina,
         HANDLE_ERROR(cudaMemset(d_denominbuffer, 0, DEFAULT_NFACTORS * maxdlength*sizeof(double)));
         switch(mode_n)
         {
-          case 0: //for the first mode
-          {
-            idx_t blocknum_u = h_traina->dlength / DEFAULT_BLOCKSIZE + 1;      
-            update_frac_gpu_as<<<blocknum_m,DEFAULT_BLOCKSIZE,0>>>(d_traina, d_factora, d_factorb, d_factorc, d_nominbuffer, d_denominbuffer, tilenum);
-            update_ccd_gpu<<<blocknum_u, DEFAULT_BLOCKSIZE,0>>>(d_traina, d_factora, d_nominbuffer,d_denominbuffer, h_traina->dlength, regularization_index); 
-            break;
-          }
+	          case 0: //for the first mode
+	          {
+	            idx_t blocknum_u = h_traina->dlength / DEFAULT_BLOCKSIZE + 1;
+	            HANDLE_ERROR(cudaEventRecord(train_start, 0));
+	            update_frac_gpu_as<<<blocknum_m,DEFAULT_BLOCKSIZE,0>>>(d_traina, d_factora, d_factorb, d_factorc, d_nominbuffer, d_denominbuffer, tilenum);
+	            update_ccd_gpu<<<blocknum_u, DEFAULT_BLOCKSIZE,0>>>(d_traina, d_factora, d_nominbuffer,d_denominbuffer, h_traina->dlength, regularization_index);
+	            HANDLE_ERROR(cudaGetLastError());
+	            HANDLE_ERROR(cudaEventRecord(train_stop, 0));
+	            epoch_gpu_us += p_cuda_elapsed_us(train_start, train_stop);
+	            break;
+	          }
 
-          case 1: //for the second mode
-          {
-            idx_t blocknum_u = h_trainb->dlength / DEFAULT_BLOCKSIZE + 1;      
-            update_frac_gpu_as<<<blocknum_m,DEFAULT_BLOCKSIZE,0>>>(d_trainb, d_factorb, d_factorc, d_factora, d_nominbuffer, d_denominbuffer, tilenum);
-            update_ccd_gpu<<<blocknum_u, DEFAULT_BLOCKSIZE,0>>>(d_trainb, d_factorb, d_nominbuffer,d_denominbuffer, h_trainb->dlength, regularization_index);
-            break;
-          } 
+	          case 1: //for the second mode
+	          {
+	            idx_t blocknum_u = h_trainb->dlength / DEFAULT_BLOCKSIZE + 1;
+	            HANDLE_ERROR(cudaEventRecord(train_start, 0));
+	            update_frac_gpu_as<<<blocknum_m,DEFAULT_BLOCKSIZE,0>>>(d_trainb, d_factorb, d_factorc, d_factora, d_nominbuffer, d_denominbuffer, tilenum);
+	            update_ccd_gpu<<<blocknum_u, DEFAULT_BLOCKSIZE,0>>>(d_trainb, d_factorb, d_nominbuffer,d_denominbuffer, h_trainb->dlength, regularization_index);
+	            HANDLE_ERROR(cudaGetLastError());
+	            HANDLE_ERROR(cudaEventRecord(train_stop, 0));
+	            epoch_gpu_us += p_cuda_elapsed_us(train_start, train_stop);
+	            break;
+	          }
 
         //for the third mode
           default:
-          {
-            idx_t blocknum_u = h_trainc->dlength / DEFAULT_BLOCKSIZE + 1;      
-            update_frac_gpu_as<<<blocknum_m,DEFAULT_BLOCKSIZE,0>>>(d_trainc, d_factorc, d_factora, d_factorb, d_nominbuffer, d_denominbuffer, tilenum);
-            update_ccd_gpu<<<blocknum_u, DEFAULT_BLOCKSIZE,0>>>(d_trainc, d_factorc, d_nominbuffer,d_denominbuffer, h_trainc->dlength, regularization_index);
-            break;
-          }
+	          {
+	            idx_t blocknum_u = h_trainc->dlength / DEFAULT_BLOCKSIZE + 1;
+	            HANDLE_ERROR(cudaEventRecord(train_start, 0));
+	            update_frac_gpu_as<<<blocknum_m,DEFAULT_BLOCKSIZE,0>>>(d_trainc, d_factorc, d_factora, d_factorb, d_nominbuffer, d_denominbuffer, tilenum);
+	            update_ccd_gpu<<<blocknum_u, DEFAULT_BLOCKSIZE,0>>>(d_trainc, d_factorc, d_nominbuffer,d_denominbuffer, h_trainc->dlength, regularization_index);
+	            HANDLE_ERROR(cudaGetLastError());
+	            HANDLE_ERROR(cudaEventRecord(train_stop, 0));
+	            epoch_gpu_us += p_cuda_elapsed_us(train_start, train_stop);
+	            break;
+	          }
         }
 
-        HANDLE_ERROR(cudaDeviceSynchronize());
-      }
+	      }
 
-        gettimeofday(&end,NULL);
-        diff = 1000000*(end.tv_sec-start.tv_sec) + end.tv_usec - start.tv_usec;
-        epoch_gpu_us = diff;
-        total_gpu_time_us += epoch_gpu_us;
+	        gettimeofday(&end,NULL);
+	        diff = 1000000*(end.tv_sec-start.tv_sec) + end.tv_usec - start.tv_usec;
+	        total_gpu_time_us += epoch_gpu_us;
 
         HANDLE_ERROR(cudaMemcpy(mats[0]->values, d_value_a, mats[0]->I * DEFAULT_NFACTORS * sizeof(double), cudaMemcpyDeviceToHost));
         HANDLE_ERROR(cudaMemcpy(mats[1]->values, d_value_b, mats[1]->I * DEFAULT_NFACTORS * sizeof(double), cudaMemcpyDeviceToHost));
         HANDLE_ERROR(cudaMemcpy(mats[2]->values, d_value_c, mats[2]->I * DEFAULT_NFACTORS * sizeof(double), cudaMemcpyDeviceToHost));
-        HANDLE_ERROR(cudaDeviceSynchronize()); 
+        HANDLE_ERROR(cudaDeviceSynchronize());
         p_debug_matrix_stats(mats, nmodes, e);
         #ifdef CCD_DEBUG
         matrix_display(mats[0]);
@@ -876,12 +909,12 @@ void tc_ccd(sptensor_t * traina,
         gettimeofday(&end,NULL);
         diff = 1000000*(end.tv_sec-start.tv_sec) + end.tv_usec - start.tv_usec;
         epoch_total_us = diff;
-      
-    
+
+
    /* compute RMSE and adjust learning rate */
     //the first element is used to store the final loss
-    //idx_t blocknum_u = h_traina->dlength / DEFAULT_BLOCKSIZE + 1; 
-    //HANDLE_ERROR(cudaMemset(d_nominbuffer, 0, sizeof(double))); 
+    //idx_t blocknum_u = h_traina->dlength / DEFAULT_BLOCKSIZE + 1;
+    //HANDLE_ERROR(cudaMemset(d_nominbuffer, 0, sizeof(double)));
     //update_residual_gpu<<<blocknum_u, DEFAULT_BLOCKSIZE,0>>>(d_traina, tilenum, d_nominbuffer);
     //HANDLE_ERROR(cudaMemcpy(&loss, d_nominbuffer, sizeof(double), cudaMemcpyDeviceToHost));
     //frobsq = tc_frob_sq(nmodes, regularization_index, mats);
@@ -900,9 +933,11 @@ void tc_ccd(sptensor_t * traina,
       break;
     }
 
-  } /* foreach epoch */
+	  } /* foreach epoch */
+    HANDLE_ERROR(cudaEventDestroy(train_start));
+    HANDLE_ERROR(cudaEventDestroy(train_stop));
 
-  /* print times */
+	  /* print times */
   //p_transpose_model(mats);
   //p_transpose_model(ws->best_model);
 

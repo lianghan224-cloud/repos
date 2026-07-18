@@ -275,26 +275,32 @@ def main() -> None:
         train_idx, train_vals = sets["train"]
         for epoch in range(1, args.epochs + 1):
             model.train()
-            if device.type == "cuda":
-                ev_start = torch.cuda.Event(enable_timing=True)
-                ev_end = torch.cuda.Event(enable_timing=True)
-                ev_start.record()
+            batch_events = []
             epoch_loss = 0.0
             epoch_n = 0
             for idx_np, val_np in batches(train_idx, train_vals, args.batch_size):
                 idx = torch.as_tensor(idx_np, dtype=torch.long, device=device)
                 y = torch.as_tensor(val_np, dtype=torch.float32, device=device)
+                if device.type == "cuda":
+                    ev_start = torch.cuda.Event(enable_timing=True)
+                    ev_end = torch.cuda.Event(enable_timing=True)
+                    ev_start.record()
                 optimizer.zero_grad(set_to_none=True)
                 pred = model(idx)
                 loss = loss_fn(pred, y)
                 loss.backward()
                 optimizer.step()
+                if device.type == "cuda":
+                    ev_end.record()
+                    batch_events.append((ev_start, ev_end))
                 epoch_loss += float(loss.detach().cpu()) * int(y.numel())
                 epoch_n += int(y.numel())
             if device.type == "cuda":
-                ev_end.record()
                 torch.cuda.synchronize()
-                total_gpu_s += ev_start.elapsed_time(ev_end) / 1000.0
+                total_gpu_s += sum(
+                    ev_start.elapsed_time(ev_end) / 1000.0
+                    for ev_start, ev_end in batch_events
+                )
 
             train_metrics = metrics(model, *sets["train"], args.eval_batch_size, device)
             val_metrics = metrics(model, *sets["val"], args.eval_batch_size, device)
