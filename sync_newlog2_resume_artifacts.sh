@@ -11,7 +11,7 @@ Environment:
   DST_BASE=/data/project/lianghan/work   Target A40 work root.
   MODE=full                              full: sync all datasets; resume: legacy tpdata-only sync.
   SYNC_TNS=1                             Also sync prepared_common_splits_tns.
-  SYNC_LOGS=0                            Also sync old newlog2 CSV progress. Keep 0 for strict timing reruns.
+  SYNC_LOGS=0                            Also sync old newlog2 CSV progress. Keep 0 for strict timing runs.
 
 Examples:
   ./sync_newlog2_resume_artifacts.sh lianghan@a40-host
@@ -108,7 +108,7 @@ EOF
     --exclude='*' \
     "$SRC_LOGS/" "$REMOTE:$DST_LOGS/"
 else
-  echo "[skip] newlog2 CSV progress not synced; strict timing reruns need fresh CSVs"
+  echo "[skip] newlog2 CSV progress not synced; strict timing runs should not mix old CSVs"
 fi
 
 echo "[done] artifacts synced to $REMOTE:$DST_BASE"

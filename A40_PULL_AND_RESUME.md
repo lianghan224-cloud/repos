@@ -1,12 +1,6 @@
-# A40 拉取和严格 GPU 计时重跑说明
+# A40 拉取和运行说明
 
-本文档用于在另一张 A40 上拉取最新版实验代码，并用已划分好的 common splits 数据集重跑 `newlog2`。
-
-当前最新版提交：
-
-```bash
-7002c10 Restrict GPU timing to training work
-```
+本文档用于在另一张 A40 上拉取最新版实验代码，并在你指定的数据集目录上运行或复现实验。
 
 ## 口径
 
@@ -18,18 +12,7 @@
 - 不包含 train/val/test metric evaluation
 - 不包含 CSV 解析、日志写入、Python 数据加载等 CPU 侧时间
 
-旧 `newlog2` CSV 和 `artifacts/newlog2_csv_snapshot` 是旧口径，不能混入当前新口径结果。新 A40 上应使用空的 `OUT_ROOT` 重新生成 CSV。
-
-## 需要重跑的实验
-
-按当前要求，重跑：
-
-- `CUTC-sgd`: `DARPA`, `LANL2`, `BJTaxi`, `tpdata`
-- `BLCO`: `DARPA`, `LANL2`, `BJTaxi`, `tpdata`
-- `GenTen`: `DARPA`, `LANL2`, `BJTaxi`, `tpdata`
-- `CoSTCo`: `DARPA`, `LANL2`, `BJTaxi`, `tpdata`
-
-`CUTC-ccd` 和 `CUTC-als` 默认关闭，不跑。
+严格计时代码从提交 `7002c10` 开始。部署前先拉取最新 `main`。
 
 ## 1. 拉取最新版
 
@@ -39,13 +22,7 @@ cd /data/project/lianghan/work
 git clone https://github.com/lianghan224-cloud/repos.git repos
 cd repos
 git pull
-git rev-parse --short HEAD
-```
-
-确认输出至少是：
-
-```bash
-7002c10
+git log --oneline -3
 ```
 
 如果仓库是私有的，改用你有权限的 SSH 或 token 拉取方式。
@@ -56,23 +33,35 @@ git rev-parse --short HEAD
 
 ```bash
 DATA_ROOT/
-  DARPA/
-    DARPA_metadata.json
-    DARPA_train.npz
-    DARPA_val.npz
-    DARPA_test.npz
-  LANL2/
-  BJTaxi/
-  tpdata/
+  DATASET_A/
+    DATASET_A_metadata.json
+    DATASET_A_train.npz
+    DATASET_A_val.npz
+    DATASET_A_test.npz
+  DATASET_B/
+    ...
 ```
 
-如果跑 `CUTC-sgd` 或 `BLCO`，脚本会需要 TNS 文件；默认会自动导出到：
+`run_newlog2_common_splits.sh` 默认数据集列表是：
+
+```bash
+DARPA LANL2 BJTaxi tpdata
+```
+
+如果你在另一张卡上使用不同数据集或只跑其中一部分，用 `DATASETS` 指定：
+
+```bash
+DATASETS="tpdata"
+DATASETS="DARPA LANL2 BJTaxi tpdata"
+```
+
+如果跑 `CUTC-sgd` 或 `BLCO`，脚本需要 TNS 文件。默认会从 `.npz` 自动导出到：
 
 ```bash
 ${DATA_ROOT}_tns
 ```
 
-也可以预先把 TNS 目录传过去，并通过 `TNS_ROOT=/path/to/tns` 指定。
+也可以预先准备 TNS 目录，并通过 `TNS_ROOT=/path/to/tns` 指定。
 
 ## 3. 构建
 
@@ -83,7 +72,7 @@ nvidia-smi
 nvcc --version
 ```
 
-`run_newlog2_common_splits.sh` 会在需要时自动构建 `cuTC` 和 `BLCO`。
+`run_newlog2_common_splits.sh` 会在相关方法开启时自动构建 `cuTC` 和 `BLCO`。
 
 GenTen 需要先构建出 CUDA 版二进制：
 
@@ -101,9 +90,11 @@ make -j
 ls -lh /data/project/lianghan/work/repos/GenTen/build/cuda/bin/genten
 ```
 
-## 4. 不要恢复旧 CSV 快照
+如果目标机已有可用 `genten`，也可以通过 `GENTEN_BIN=/path/to/genten` 指定。
 
-当前严格 GPU 训练时间口径下，不要运行：
+## 4. 旧 CSV 快照
+
+`artifacts/newlog2_csv_snapshot` 是旧 `train_gpu` 口径的 CSV 快照，不适合混入严格计时的新结果目录。默认不要运行：
 
 ```bash
 ./restore_newlog2_csv_snapshot.sh
@@ -115,56 +106,63 @@ ls -lh /data/project/lianghan/work/repos/GenTen/build/cuda/bin/genten
 ALLOW_OLD_TIMING_RESTORE=1 OUT_ROOT=/path/to/oldlog ./restore_newlog2_csv_snapshot.sh
 ```
 
-## 5. 直接重跑
-
-建议新建空输出目录：
-
-```bash
-mkdir -p /data/project/lianghan/work/logs/newlog2
-```
+## 5. 直接运行
 
 先 dry-run 检查配置：
 
 ```bash
 cd /data/project/lianghan/work/repos
 ROOT=/path/to/prepared_common_splits \
-OUT_ROOT=/data/project/lianghan/work/logs/newlog2 \
+OUT_ROOT=/path/to/newlog2 \
 RUN_CUTC_CCD=0 RUN_CUTC_ALS=0 \
 DRY_RUN=1 \
 ./run_newlog2_common_splits.sh
 ```
 
-确认无误后正式跑：
+正式运行：
 
 ```bash
 cd /data/project/lianghan/work/repos
 ROOT=/path/to/prepared_common_splits \
-OUT_ROOT=/data/project/lianghan/work/logs/newlog2 \
+OUT_ROOT=/path/to/newlog2 \
 RUN_CUTC_CCD=0 RUN_CUTC_ALS=0 \
 ./run_newlog2_common_splits.sh
 ```
 
-## 6. 等 GPU 空闲后自动跑
+默认方法开关：
 
-如果希望等 A40 空闲显存达到阈值后再跑：
+```bash
+RUN_CUTC_SGD=1
+RUN_CUTC_CCD=0
+RUN_CUTC_ALS=0
+RUN_BLCO=1
+RUN_GENTEN=1
+RUN_COSTCO=1
+```
+
+脚本会跳过 `OUT_ROOT` 中已有且非空的 CSV。如果你要强制重跑某个结果，先把对应 CSV 移到归档目录，或使用新的空 `OUT_ROOT`。
+
+## 6. 等 GPU 空闲后运行
+
+如果希望等 A40 空闲显存达到阈值后再运行：
 
 ```bash
 cd /data/project/lianghan/work/repos
-mkdir -p /data/project/lianghan/work/logs/newlog2
+mkdir -p /path/to/newlog2
 setsid -f env \
   ROOT=/path/to/prepared_common_splits \
-  OUT_ROOT=/data/project/lianghan/work/logs/newlog2 \
+  OUT_ROOT=/path/to/newlog2 \
   RUN_CUTC_CCD=0 RUN_CUTC_ALS=0 \
   MIN_FREE_MIB=43000 INTERVAL_SEC=120 \
   ./resume_newlog2_when_gpu_free.sh \
-  > /data/project/lianghan/work/logs/newlog2/resume_launch.log 2>&1
+  > /path/to/newlog2/resume_launch.log 2>&1
 ```
 
 查看等待状态：
 
 ```bash
-cat /data/project/lianghan/work/logs/newlog2/resume_wait.pid
-tail -f /data/project/lianghan/work/logs/newlog2/resume_launch.log
+cat /path/to/newlog2/resume_wait.pid
+tail -f /path/to/newlog2/resume_launch.log
 ```
 
 脚本会自动写：
@@ -184,28 +182,24 @@ cd /data/project/lianghan/work/repos
 
 默认行为：
 
-- `MODE=full`: 同步所有 4 个数据集
+- `MODE=full`: 同步所有数据集目录
 - `SYNC_TNS=1`: 同步 TNS
 - `SYNC_LOGS=0`: 不同步旧 CSV
 
-不要在严格 GPU 计时重跑时设置 `SYNC_LOGS=1`，否则旧 CSV 会导致 runner 跳过应重跑的实验。
+如需只同步部分数据，直接用 `rsync` 或设置脚本的 `MODE=resume` 走旧的 tpdata-only 路径。
 
 ## 8. 结果检查
 
-期望生成 16 个 CSV：
+查看输出 CSV：
 
 ```bash
-find /data/project/lianghan/work/logs/newlog2 -name '*.csv' | sort
-find /data/project/lianghan/work/logs/newlog2 -name '*.csv' | wc -l
+find /path/to/newlog2 -name '*.csv' | sort
 ```
 
-应包含：
+查看运行日志：
 
 ```bash
-CUTC-sgd/*.csv
-BLCO/*.csv
-GenTen/*.csv
-CoSTCo/*.csv
+tail -f /path/to/newlog2/driver.log
 ```
 
-不应包含 `CUTC-ccd` 或 `CUTC-als` 结果，除非你显式打开了对应开关。
+如果保持默认方法开关，不应生成 `CUTC-ccd` 或 `CUTC-als` 结果，除非你显式打开对应开关。

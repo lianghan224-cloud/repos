@@ -8,13 +8,14 @@ This repository contains the comparison experiment code for:
 - `GenTen/`
 - top-level runners for `newlog1` and `newlog2`
 
-Use the latest strict GPU timing commit:
+Use the latest `main` before deployment:
 
 ```bash
 git pull
 git rev-parse --short HEAD
-# expected: 7002c10 or newer
 ```
+
+Strict GPU timing support starts at commit `7002c10`.
 
 ## Timing Definition
 
@@ -70,24 +71,23 @@ cmake ../.. -DCMAKE_BUILD_TYPE=Release -DKokkos_ENABLE_CUDA=ON
 make -j
 ```
 
-## Current newlog2 Scope
+## Default newlog2 Scope
 
-Current strict-timing `newlog2` should be regenerated from an empty `OUT_ROOT`.
-Run:
+By default, `run_newlog2_common_splits.sh` runs:
 
 - `CUTC-sgd`
 - `BLCO`
 - `GenTen`
 - `CoSTCo`
 
-for:
+for the default dataset list:
 
 - `DARPA`
 - `LANL2`
 - `BJTaxi`
 - `tpdata`
 
-`CUTC-ccd` and `CUTC-als` remain disabled by default:
+`CUTC-ccd` and `CUTC-als` are disabled by default:
 
 ```bash
 RUN_CUTC_CCD=0
