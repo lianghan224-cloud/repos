@@ -7,6 +7,7 @@
 #include "cooperative_groups.h"
 #include <iostream>
 #include <cmath>
+#include <cstdlib>
 #include <sys/time.h>
 
 #define BLOCK_SIZE 128 // TODO tune?
@@ -32,6 +33,15 @@ static long long walltime_us_now() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return 1000000LL * (long long)tv.tv_sec + (long long)tv.tv_usec;
+}
+
+static int env_positive_int(const char* name, int default_value) {
+    const char* text = getenv(name);
+    if (!text || text[0] == '\0') return default_value;
+    char* end = NULL;
+    long parsed = strtol(text, &end, 10);
+    if (end != text && parsed > 0) return (int)parsed;
+    return default_value;
 }
 
 static EvalMetrics evaluate_sparse_tensor(const SparseTensor* X, const KruskalModel* A) {
@@ -221,6 +231,12 @@ FType cpals_blco_dev(blcotensor* at_host, KruskalModel* A, int maxiter, FType to
     EvalMetrics holdout_m = evaluate_sparse_tensor(holdout_set, A);
     printf("epoch:%d   loss: %0.5e   RMSE-tr: %0.5e   RMSE-vl: %0.5e   RMSE-u: %0.5e   MAE-tr: %0.5e   MAE-vl: %0.5e   MAE-u: %0.5e   ER-tr: %0.5e   ER-vl: %0.5e   ER-u: %0.5e \n",
            0, train_m.loss, train_m.rmse, val_m.rmse, holdout_m.rmse, train_m.mae, val_m.mae, holdout_m.mae, train_m.er, val_m.er, holdout_m.er);
+    const bool monitor_val = val_set && val_set->nnz > 0;
+    const int max_bad_epochs = env_positive_int("BLCO_MAX_BADEPOCHS", 20);
+    double best_stop_rmse = monitor_val ? val_m.rmse : train_m.rmse;
+    int bad_epochs = 0;
+    printf("BLCO early stop monitor=%s tolerance=%0.6e max_bad_epochs=%d\n",
+           monitor_val ? "val_rmse" : "train_rmse", (double)tolerance, max_bad_epochs);
 
     for (IType epoch = 1; epoch <= maxiter; ++epoch) {
         cudaEventRecord(start);
@@ -290,7 +306,21 @@ FType cpals_blco_dev(blcotensor* at_host, KruskalModel* A, int maxiter, FType to
         printf("--> Iter %3d: f = %0.6f f-delta = %0.6f time = %0.6f, (s)\n",
                (int)epoch, fit, (fit - fit_old), millis / 1000.0f);
 
-        if (fabs(fit - fit_old) < tolerance || isnan(fit)) break;
+        const double monitor_rmse = monitor_val ? val_m.rmse : train_m.rmse;
+        if (monitor_rmse < best_stop_rmse - (double)tolerance) {
+            best_stop_rmse = monitor_rmse;
+            bad_epochs = 0;
+        } else {
+            bad_epochs++;
+        }
+
+        if (isnan(fit)) break;
+        if (bad_epochs >= max_bad_epochs) {
+            printf("Early stop at epoch %d: %s did not improve by %0.6e for %d epochs.\n",
+                   (int)epoch, monitor_val ? "val_rmse" : "train_rmse",
+                   (double)tolerance, bad_epochs);
+            break;
+        }
         fit_old = fit;
     }
 

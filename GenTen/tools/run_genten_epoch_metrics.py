@@ -135,11 +135,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--maxiters",
         type=int,
-        default=160,
+        default=300,
         help="Maximum outer epochs to export.",
     )
     parser.add_argument("--epochiters", type=int, default=50, help="Iterations per epoch (cumulative mode).")
-    parser.add_argument("--frozeniters", type=int, default=1, help="Frozen iters (cumulative mode).")
+    parser.add_argument("--frozeniters", type=int, default=0, help="Frozen iters in GenTen calls.")
     parser.add_argument(
         "--gcp-tol",
         type=float,
@@ -174,13 +174,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rmse-patience",
         type=int,
-        default=10,
+        default=20,
         help="Stepwise early-stop patience for RMSE plateau.",
     )
     parser.add_argument(
         "--rmse-min-improve",
         type=float,
-        default=1.0e-8,
+        default=1.0e-4,
         help=(
             "Minimum RMSE decrease to reset RMSE patience in stepwise mode."
         ),
@@ -751,8 +751,7 @@ def main() -> int:
                 ktns_path = work_root / f"{artifact_prefix}_ep{step}.ktns"
                 runlog_path = work_root / f"{artifact_prefix}_ep{step}.log"
 
-                # Legacy stepwise semantics:
-                # one external epoch == one GenTen call with 1/1/1 iterations.
+                # One external epoch is one warm-started GenTen call.
                 cmd = build_genten_cmd(
                     genten_bin=genten_bin,
                     exec_space=args.exec_space,
@@ -760,7 +759,7 @@ def main() -> int:
                     rank=args.rank,
                     maxiters=1,
                     epochiters=1,
-                    frozeniters=1,
+                    frozeniters=args.frozeniters,
                     sampling=args.sampling,
                     rate=args.rate,
                     decay=args.decay,
@@ -854,7 +853,7 @@ def main() -> int:
                         rmse_no_improve += 1
 
                 rmse_plateau_stop = (
-                    args.rmse_stop_set != "off" and rmse_no_improve > args.rmse_patience
+                    args.rmse_stop_set != "off" and rmse_no_improve >= args.rmse_patience
                 )
 
                 if rmse_plateau_stop or stepwise_stop_triggered(step_fest, nfails, args.gcp_tol, args.fails):

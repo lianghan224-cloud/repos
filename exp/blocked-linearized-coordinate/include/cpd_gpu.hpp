@@ -12,7 +12,7 @@
 //  - X: the BLCO tensor stored entirely in host memory
 //  - A: a kruskal tensor initated with values. This will be overwritten
 //  - maxiter: the maximum number of iterations to perform
-//  - tolerance: prematurely quits if the change in fit goes below this
+//  - tolerance: minimum monitored RMSE improvement required to reset patience
 //  - kernel: the ID of the MTTKRP kernel to use
 //  - stream_data: whether data should be streamed during MTTKRP 
 //  - do_batching: whether MTTKRP kernel launch should be batched

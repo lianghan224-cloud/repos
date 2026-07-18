@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sample-rate", type=base.parse_rate, required=True)
     p.add_argument("--validation-rate", type=base.parse_rate, default=0.05)
     p.add_argument("--rank", type=int, default=8)
-    p.add_argument("--maxiters", type=int, default=150)
+    p.add_argument("--maxiters", type=int, default=300)
     p.add_argument("--start-epoch", type=int, default=1)
     p.add_argument("--initial-file", type=pathlib.Path, default=None)
     p.add_argument("--append", action="store_true")
@@ -60,6 +60,30 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--adam-eps", type=float, default=1.0e-8)
     p.add_argument("--gcp-tol", type=float, default=1.0e-4)
     p.add_argument("--fails", type=int, default=10)
+    p.add_argument(
+        "--frozeniters",
+        type=int,
+        default=0,
+        help="Frozen iterations in each one-step GenTen call. Default 0 so each exported epoch updates parameters.",
+    )
+    p.add_argument(
+        "--rmse-stop-set",
+        choices=("off", "train", "val", "u"),
+        default="val",
+        help="RMSE set used for cuTC-style early stop.",
+    )
+    p.add_argument(
+        "--rmse-patience",
+        type=int,
+        default=20,
+        help="Stop after this many epochs without the requested RMSE improvement.",
+    )
+    p.add_argument(
+        "--rmse-min-improve",
+        type=float,
+        default=1.0e-4,
+        help="Minimum RMSE decrease required to reset early-stop patience.",
+    )
     p.add_argument("--printitn", type=int, default=0)
     p.add_argument("--fuse-sa", action=argparse.BooleanOptionalAction, default=True)
     p.add_argument("--keep-artifacts", action="store_true")
@@ -269,6 +293,9 @@ def main() -> int:
                 last = rows[-1]
                 total_time = float(last[1])
                 total_gpu = float(last[2])
+        best_stop_rmse = float("inf")
+        rmse_no_improve = 0
+        rows_written = 0
         mode = "a" if args.append and csv_path.exists() else "w"
         with csv_path.open(mode, newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -285,7 +312,7 @@ def main() -> int:
                     rank=args.rank,
                     maxiters=1,
                     epochiters=1,
-                    frozeniters=1,
+                    frozeniters=args.frozeniters,
                     sampling=args.sampling,
                     rate=args.rate,
                     decay=args.decay,
@@ -341,6 +368,7 @@ def main() -> int:
                         "u_er": base.fmt(u_er),
                     }
                 )
+                rows_written += 1
                 f.flush()
                 if prev_ktns is not None and not args.keep_artifacts:
                     prev_ktns.unlink(missing_ok=True)
@@ -348,11 +376,34 @@ def main() -> int:
                 if not args.keep_artifacts:
                     hist_path.unlink(missing_ok=True)
                     runlog_path.unlink(missing_ok=True)
+
+                if args.rmse_stop_set == "train":
+                    tracked_rmse = train_rmse
+                elif args.rmse_stop_set == "val":
+                    tracked_rmse = val_rmse
+                elif args.rmse_stop_set == "u":
+                    tracked_rmse = u_rmse
+                else:
+                    tracked_rmse = float("nan")
+
+                if math.isfinite(tracked_rmse):
+                    if tracked_rmse < best_stop_rmse - args.rmse_min_improve:
+                        best_stop_rmse = tracked_rmse
+                        rmse_no_improve = 0
+                    else:
+                        rmse_no_improve += 1
+                    if args.rmse_stop_set != "off" and rmse_no_improve >= args.rmse_patience:
+                        print(
+                            f"Early stop at epoch {epoch}: {args.rmse_stop_set}_rmse "
+                            f"did not improve by {args.rmse_min_improve:g} for "
+                            f"{rmse_no_improve} epochs."
+                        )
+                        break
             if not args.keep_artifacts and prev_ktns is not None:
                 prev_ktns.unlink(missing_ok=True)
 
     print(f"Done. CSV: {csv_path}")
-    print(f"Total rows: {args.maxiters}")
+    print(f"Total rows: {rows_written}")
     return 0
 
 

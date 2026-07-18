@@ -45,6 +45,19 @@ SKIP_BUILD="${SKIP_BUILD:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 GPU_DEVICE="${GPU_DEVICE:-0}"
 BLCO_BLASLIBS="${BLCO_BLASLIBS:-/opt/anaconda3/envs/zhangsac/lib/liblapacke.so /opt/anaconda3/envs/zhangsac/lib/liblapack.so /opt/anaconda3/envs/zhangsac/lib/libopenblas.so -lgfortran}"
+CUTC_MAX_ITERATE="${CUTC_MAX_ITERATE:-300}"
+CUTC_MAX_BADEPOCHS="${CUTC_MAX_BADEPOCHS:-20}"
+CUTC_TOLERANCE="${CUTC_TOLERANCE:-1e-4}"
+BLCO_MAX_ITER="${BLCO_MAX_ITER:-300}"
+BLCO_MAX_BADEPOCHS="${BLCO_MAX_BADEPOCHS:-20}"
+BLCO_TOLERANCE="${BLCO_TOLERANCE:-1e-4}"
+GENTEN_MAXITERS="${GENTEN_MAXITERS:-300}"
+GENTEN_FROZENITERS="${GENTEN_FROZENITERS:-0}"
+GENTEN_PATIENCE="${GENTEN_PATIENCE:-20}"
+GENTEN_TOLERANCE="${GENTEN_TOLERANCE:-1e-4}"
+COSTCO_EPOCHS="${COSTCO_EPOCHS:-300}"
+COSTCO_PATIENCE="${COSTCO_PATIENCE:-20}"
+COSTCO_TOLERANCE="${COSTCO_TOLERANCE:-1e-4}"
 
 rate_for() {
   python3 - "$ROOT/$1/${1}_metadata.json" <<'PY'
@@ -151,9 +164,9 @@ run_cutc_one() {
     env "${alg_env[@]}" \
     CUTC_PRESPLIT=1 \
     CUTC_ALGORITHM="$alg" \
-    CUTC_MAX_ITERATE=300 \
-    CUTC_MAX_BADEPOCHS="${CUTC_MAX_BADEPOCHS:-20}" \
-    CUTC_TOLERANCE="${CUTC_TOLERANCE:-1e-4}" \
+    CUTC_MAX_ITERATE="$CUTC_MAX_ITERATE" \
+    CUTC_MAX_BADEPOCHS="$CUTC_MAX_BADEPOCHS" \
+    CUTC_TOLERANCE="$CUTC_TOLERANCE" \
     stdbuf -oL -eL ./tc "$train" "$train" "$train" "$val" "$test"
   ) | tee "$raw" | python3 "$CUTC_LOG_TO_CSV" --input - --output "$tmp" >/dev/null
   mv "$tmp" "$out"
@@ -193,6 +206,7 @@ run_blco() {
   local tmp="${out}.tmp"
   rm -f "$tmp"
   echo "[run] BLCO -> $out"
+  BLCO_MAX_BADEPOCHS="$BLCO_MAX_BADEPOCHS" \
   LD_LIBRARY_PATH="/usr/local/cuda/lib64:/usr/local/cuda/targets/x86_64-linux/lib:/opt/anaconda3/envs/zhangsac/lib:${LD_LIBRARY_PATH:-}" \
   "$BLCO_BIN" \
     --train-file "$TNS_ROOT/$ds/${ds}_train.tns" \
@@ -200,7 +214,8 @@ run_blco() {
     --test-file "$TNS_ROOT/$ds/${ds}_test.tns" \
     --dims "$(shape_for "$ds")" \
     --rank 8 \
-    --max-iter 150 \
+    --max-iter "$BLCO_MAX_ITER" \
+    --epsilon "$BLCO_TOLERANCE" \
     --kernel-id 10 \
     --device "$GPU_DEVICE" \
     --thread-cf 2 \
@@ -231,7 +246,11 @@ run_genten() {
       --output-file "$tmp" \
       --sample-rate "$rate" \
       --rank 8 \
-      --maxiters 20 \
+      --maxiters "$GENTEN_MAXITERS" \
+      --frozeniters "$GENTEN_FROZENITERS" \
+      --rmse-stop-set val \
+      --rmse-patience "$GENTEN_PATIENCE" \
+      --rmse-min-improve "$GENTEN_TOLERANCE" \
       --work-dir "$WORK_TMP/genten"
   )
   mv "$tmp" "$out"
@@ -256,9 +275,9 @@ run_costco() {
     --output "$tmp" \
     --rank 8 \
     --sampling-rate "$rate" \
-    --epochs 300 \
-    --patience 20 \
-    --tolerance 1e-6 \
+    --epochs "$COSTCO_EPOCHS" \
+    --patience "$COSTCO_PATIENCE" \
+    --tolerance "$COSTCO_TOLERANCE" \
     --lr 1e-4 \
     --batch-size 262144 \
     --eval-batch-size 262144
@@ -273,6 +292,7 @@ main() {
   echo "[config] WORK_TMP=$WORK_TMP"
   echo "[config] DATASETS=${DATASETS[*]}"
   echo "[config] RUN_CUTC_SGD=$RUN_CUTC_SGD RUN_CUTC_CCD=$RUN_CUTC_CCD RUN_CUTC_ALS=$RUN_CUTC_ALS RUN_BLCO=$RUN_BLCO RUN_GENTEN=$RUN_GENTEN RUN_COSTCO=$RUN_COSTCO DRY_RUN=$DRY_RUN"
+  echo "[config] stop CUTC=max:$CUTC_MAX_ITERATE patience:$CUTC_MAX_BADEPOCHS tol:$CUTC_TOLERANCE BLCO=max:$BLCO_MAX_ITER patience:$BLCO_MAX_BADEPOCHS tol:$BLCO_TOLERANCE GenTen=max:$GENTEN_MAXITERS patience:$GENTEN_PATIENCE tol:$GENTEN_TOLERANCE frozen:$GENTEN_FROZENITERS CoSTCo=max:$COSTCO_EPOCHS patience:$COSTCO_PATIENCE tol:$COSTCO_TOLERANCE"
   if [[ "$DRY_RUN" == "1" ]]; then
     echo "[dry-run] configuration printed; no build, export, or training started"
     return 0

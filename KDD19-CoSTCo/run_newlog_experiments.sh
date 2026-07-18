@@ -19,9 +19,9 @@ run_one() {
     --output "$tmp" \
     --rank 8 \
     --sampling-rate "$rate" \
-    --epochs 300 \
-    --patience 20 \
-    --tolerance 1e-6 \
+    --epochs "${COSTCO_EPOCHS:-300}" \
+    --patience "${COSTCO_PATIENCE:-20}" \
+    --tolerance "${COSTCO_TOLERANCE:-1e-4}" \
     --lr 1e-4 \
     --batch-size "$batch_size" \
     --eval-batch-size "$eval_batch_size"
