@@ -7,16 +7,24 @@ OUT_ROOT="${OUT_ROOT%/}"
 RUNNER="${RUNNER:-$SCRIPT_DIR/run_newlog2_common_splits.sh}"
 LOG="$OUT_ROOT/driver.log"
 PIDFILE="$OUT_ROOT/driver.pid"
+WAIT_PIDFILE="${WAIT_PIDFILE:-$OUT_ROOT/resume_wait.pid}"
 LOCKDIR="$OUT_ROOT/resume_wait.lock"
 MIN_FREE_MIB="${MIN_FREE_MIB:-43000}"
 INTERVAL_SEC="${INTERVAL_SEC:-120}"
 
 mkdir -p "$OUT_ROOT"
 if ! mkdir "$LOCKDIR" 2>/dev/null; then
-  echo "[resume-wait] $(date -Is) another resume waiter is active: $LOCKDIR"
-  exit 0
+  existing_pid="$(cat "$WAIT_PIDFILE" 2>/dev/null || true)"
+  if [[ -n "$existing_pid" ]] && kill -0 "$existing_pid" 2>/dev/null; then
+    echo "[resume-wait] $(date -Is) another resume waiter is active: pid=$existing_pid lock=$LOCKDIR"
+    exit 0
+  fi
+  echo "[resume-wait] $(date -Is) removing stale resume lock: $LOCKDIR"
+  rm -rf "$LOCKDIR"
+  mkdir "$LOCKDIR"
 fi
-trap 'rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
+printf '%s\n' "$$" > "$WAIT_PIDFILE"
+trap 'rm -f "$WAIT_PIDFILE"; rmdir "$LOCKDIR" 2>/dev/null || true' EXIT
 
 echo "[resume-wait] $(date -Is) waiting for GPU free memory >= ${MIN_FREE_MIB} MiB"
 while true; do

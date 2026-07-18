@@ -9,12 +9,13 @@ Usage:
 Environment:
   SRC_BASE=/data/project/lianghan/work   Source machine work root.
   DST_BASE=/data/project/lianghan/work   Target A40 work root.
-  MODE=resume                            resume: sync tpdata only; full: sync all datasets.
+  MODE=full                              full: sync all datasets; resume: legacy tpdata-only sync.
   SYNC_TNS=1                             Also sync prepared_common_splits_tns.
+  SYNC_LOGS=0                            Also sync old newlog2 CSV progress. Keep 0 for strict timing reruns.
 
 Examples:
   ./sync_newlog2_resume_artifacts.sh lianghan@a40-host
-  MODE=full ./sync_newlog2_resume_artifacts.sh lianghan@a40-host
+  SYNC_LOGS=1 ./sync_newlog2_resume_artifacts.sh lianghan@a40-host
   DST_BASE=/data/project/lianghan/work ./sync_newlog2_resume_artifacts.sh lianghan@a40-host
 EOF
 }
@@ -27,8 +28,9 @@ fi
 
 SRC_BASE="${SRC_BASE:-/data/project/lianghan/work}"
 DST_BASE="${DST_BASE:-/data/project/lianghan/work}"
-MODE="${MODE:-resume}"
+MODE="${MODE:-full}"
 SYNC_TNS="${SYNC_TNS:-1}"
+SYNC_LOGS="${SYNC_LOGS:-0}"
 
 SRC_SPLITS="$SRC_BASE/data/prepared_common_splits"
 SRC_TNS="$SRC_BASE/data/prepared_common_splits_tns"
@@ -42,19 +44,24 @@ if [[ "$MODE" != "resume" && "$MODE" != "full" ]]; then
   exit 2
 fi
 
-for path in "$SRC_SPLITS" "$SRC_LOGS"; do
+for path in "$SRC_SPLITS"; do
   if [[ ! -e "$path" ]]; then
     echo "ERROR: missing source path: $path" >&2
     exit 2
   fi
 done
 
+if [[ "$SYNC_LOGS" == "1" && ! -e "$SRC_LOGS" ]]; then
+  echo "ERROR: SYNC_LOGS=1 but missing source path: $SRC_LOGS" >&2
+  exit 2
+fi
+
 if [[ "$SYNC_TNS" == "1" && ! -e "$SRC_TNS" ]]; then
   echo "ERROR: SYNC_TNS=1 but missing source path: $SRC_TNS" >&2
   exit 2
 fi
 
-echo "[sync] remote=$REMOTE mode=$MODE sync_tns=$SYNC_TNS"
+echo "[sync] remote=$REMOTE mode=$MODE sync_tns=$SYNC_TNS sync_logs=$SYNC_LOGS"
 ssh "$REMOTE" "mkdir -p '$DST_SPLITS' '$DST_TNS' '$DST_LOGS'"
 
 if [[ "$MODE" == "full" ]]; then
@@ -65,7 +72,7 @@ if [[ "$MODE" == "full" ]]; then
     rsync -avh --info=progress2 "$SRC_TNS/" "$REMOTE:$DST_TNS/"
   fi
 else
-  echo "[sync] resume metadata: completed datasets"
+  echo "[sync] legacy resume metadata: completed datasets"
   rsync -avh --info=progress2 \
     "$SRC_SPLITS/run_manifest.json" \
     "$SRC_SPLITS/prepared_dataset_summary.csv" \
@@ -78,22 +85,30 @@ else
       "$REMOTE:$DST_SPLITS/$ds/"
   done
 
-  echo "[sync] resume dataset: tpdata"
+  echo "[sync] legacy resume dataset: tpdata"
   rsync -avh --info=progress2 "$SRC_SPLITS/tpdata/" "$REMOTE:$DST_SPLITS/tpdata/"
 
   if [[ "$SYNC_TNS" == "1" ]]; then
-    echo "[sync] resume TNS: manifest + tpdata"
+    echo "[sync] legacy resume TNS: manifest + tpdata"
     rsync -avh --info=progress2 "$SRC_TNS/manifest.json" "$REMOTE:$DST_TNS/"
     rsync -avh --info=progress2 "$SRC_TNS/tpdata/" "$REMOTE:$DST_TNS/tpdata/"
   fi
 fi
 
-echo "[sync] newlog2 CSV progress"
-rsync -avh --info=progress2 --prune-empty-dirs \
-  --include='*/' \
-  --include='*.csv' \
-  --include='driver.log' \
-  --exclude='*' \
-  "$SRC_LOGS/" "$REMOTE:$DST_LOGS/"
+if [[ "$SYNC_LOGS" == "1" ]]; then
+  cat <<'EOF'
+[sync] WARNING: syncing newlog2 CSV progress.
+[sync] Current strict timing runs should normally start with an empty OUT_ROOT,
+[sync] because old CSVs use a different train_gpu timing definition.
+EOF
+  rsync -avh --info=progress2 --prune-empty-dirs \
+    --include='*/' \
+    --include='*.csv' \
+    --include='driver.log' \
+    --exclude='*' \
+    "$SRC_LOGS/" "$REMOTE:$DST_LOGS/"
+else
+  echo "[skip] newlog2 CSV progress not synced; strict timing reruns need fresh CSVs"
+fi
 
 echo "[done] artifacts synced to $REMOTE:$DST_BASE"
